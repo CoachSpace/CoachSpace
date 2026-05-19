@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { notifyComment } from '../lib/email';
 
 export default function CommentsTab({ project, setToast }) {
   const [updates, setUpdates] = useState([]);
@@ -28,17 +29,28 @@ export default function CommentsTab({ project, setToast }) {
     if (!comment.trim()) { setToast({ message: 'Comment cannot be empty.', type: 'error' }); return; }
     if (!selectedUpdateId) { setToast({ message: 'Please select a task.', type: 'error' }); return; }
     setSaving(true);
+    const commenterName = name.trim() || 'Anonymous';
     const { data, error } = await supabase.from('comments').insert({
       project_id: project.id,
       update_id: selectedUpdateId,
-      name: name.trim() || 'Anonymous',
+      name: commenterName,
       comment: comment.trim(),
     }).select().single();
     setSaving(false);
     if (error) { setToast({ message: error.message, type: 'error' }); return; }
     setComments(prev => [data, ...prev]);
     setComment('');
-    setToast({ message: 'Comment added!', type: 'success' });
+    setToast({ message: 'Comment posted!', type: 'success' });
+
+    // Send email notification
+    notifyComment({
+      projectName: project.project_name,
+      clientName: project.client_name,
+      commenterName,
+      commentText: comment.trim(),
+      coachEmail: process.env.REACT_APP_COACH_EMAIL,
+      clientEmail: project.client_email,
+    });
   };
 
   const handleDelete = async (id) => {
@@ -48,21 +60,18 @@ export default function CommentsTab({ project, setToast }) {
     setToast({ message: 'Comment deleted.', type: 'success' });
   };
 
-  // Group comments by update
   const grouped = updates.map(u => ({
     ...u,
     comments: comments.filter(c => c.update_id === u.id),
   })).filter(u => u.comments.length > 0);
 
   const AVATAR_COLORS = ['#F6C7CF', '#EAD7D9', '#fef4e4', '#e8f5ed', '#e8f0fe'];
-  const getColor = (name) => AVATAR_COLORS[name?.charCodeAt(0) % AVATAR_COLORS.length] || AVATAR_COLORS[0];
+  const getColor = (name) => AVATAR_COLORS[(name?.charCodeAt(0) || 0) % AVATAR_COLORS.length];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Add Comment Form */}
       <div className="card">
         <h3 style={{ color: 'var(--wine)', fontSize: '1.05rem', marginBottom: '18px' }}>💬 Leave a Comment</h3>
-
         {updates.length === 0 ? (
           <p style={{ color: 'var(--rose)', fontSize: '0.88rem' }}>Add tasks in the Updates tab first to start commenting.</p>
         ) : (
@@ -79,14 +88,7 @@ export default function CommentsTab({ project, setToast }) {
             </div>
             <div>
               <label className="label">Comment *</label>
-              <textarea
-                className="input-field"
-                value={comment}
-                onChange={e => setComment(e.target.value)}
-                placeholder="Write your comment here..."
-                rows={4}
-                style={{ resize: 'vertical' }}
-              />
+              <textarea className="input-field" value={comment} onChange={e => setComment(e.target.value)} placeholder="Write your comment here..." rows={4} style={{ resize: 'vertical' }} />
             </div>
             <button className="btn-primary" onClick={handleSubmit} disabled={saving} style={{ alignSelf: 'flex-start' }}>
               {saving ? 'Posting...' : '✦ Post Comment'}
@@ -95,7 +97,6 @@ export default function CommentsTab({ project, setToast }) {
         )}
       </div>
 
-      {/* Comments display */}
       {loading ? (
         <div className="loading-spinner"><div className="spinner" /></div>
       ) : grouped.length === 0 ? (
@@ -109,11 +110,7 @@ export default function CommentsTab({ project, setToast }) {
             <div key={update.id}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
                 <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
-                <span style={{
-                  fontSize: '0.78rem', fontWeight: 600, color: 'var(--rose)',
-                  background: 'var(--cream)', padding: '4px 14px',
-                  border: '1px solid var(--border)', borderRadius: '20px', whiteSpace: 'nowrap',
-                }}>
+                <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--rose)', background: 'var(--cream)', padding: '4px 14px', border: '1px solid var(--border)', borderRadius: '20px', whiteSpace: 'nowrap' }}>
                   {update.title}
                 </span>
                 <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
@@ -123,12 +120,7 @@ export default function CommentsTab({ project, setToast }) {
                   <div key={c.id} className="card" style={{ padding: '14px 16px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
                       <div style={{ display: 'flex', gap: '12px', flex: 1 }}>
-                        <div style={{
-                          width: 36, height: 36, flexShrink: 0,
-                          borderRadius: '50%', background: getColor(c.name),
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: '0.85rem', fontWeight: 700, color: 'var(--wine)',
-                        }}>
+                        <div style={{ width: 36, height: 36, flexShrink: 0, borderRadius: '50%', background: getColor(c.name), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.85rem', fontWeight: 700, color: 'var(--wine)' }}>
                           {(c.name || 'A').charAt(0).toUpperCase()}
                         </div>
                         <div style={{ flex: 1 }}>
@@ -141,11 +133,7 @@ export default function CommentsTab({ project, setToast }) {
                           <p style={{ fontSize: '0.88rem', color: 'var(--text)', lineHeight: 1.6 }}>{c.comment}</p>
                         </div>
                       </div>
-                      <button
-                        onClick={() => handleDelete(c.id)}
-                        style={{ background: 'none', border: 'none', color: 'var(--border)', cursor: 'pointer', fontSize: '16px', flexShrink: 0 }}
-                        title="Delete comment"
-                      >×</button>
+                      <button onClick={() => handleDelete(c.id)} style={{ background: 'none', border: 'none', color: 'var(--border)', cursor: 'pointer', fontSize: '16px', flexShrink: 0 }}>×</button>
                     </div>
                   </div>
                 ))}
