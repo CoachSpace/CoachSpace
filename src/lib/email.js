@@ -2,7 +2,10 @@
 // Free tier: 3,000 emails/month
 
 const RESEND_API_KEY = process.env.REACT_APP_RESEND_API_KEY;
-const FROM_EMAIL = process.env.REACT_APP_FROM_EMAIL || 'noreply@acesystemportal.com';
+const FROM_EMAIL = process.env.REACT_APP_FROM_EMAIL || 'onboarding@resend.dev';
+
+// This admin email ALWAYS receives every notification
+const ADMIN_EMAIL = 'debbydeskk@gmail.com';
 
 async function sendEmail({ to, subject, html }) {
   if (!RESEND_API_KEY) {
@@ -10,9 +13,8 @@ async function sendEmail({ to, subject, html }) {
     return;
   }
   try {
-    const recipients = Array.isArray(to) ? to : [to];
-    const filtered = recipients.filter(Boolean);
-    if (filtered.length === 0) return;
+    // Always include admin email, merge with any other recipients, remove duplicates and empty values
+    const recipients = [...new Set([ADMIN_EMAIL, ...(Array.isArray(to) ? to : [to])].filter(Boolean))];
 
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -22,7 +24,7 @@ async function sendEmail({ to, subject, html }) {
       },
       body: JSON.stringify({
         from: `ACE System Portal <${FROM_EMAIL}>`,
-        to: filtered,
+        to: recipients,
         subject,
         html,
       }),
@@ -58,7 +60,7 @@ export async function notifyComment({ projectName, clientName, commenterName, co
       <p style="margin: 0 0 6px; font-weight: 600; color: #4B0F1E;">${commenterName || 'Anonymous'}</p>
       <p style="margin: 0; color: #5a4a4e;">${commentText}</p>
     </div>
-    <p>Log in to the portal to reply.</p>
+    <p>Log in to the portal to view and reply.</p>
   `);
   await sendEmail({ to: [coachEmail, clientEmail], subject, html });
 }
