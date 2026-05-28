@@ -30,26 +30,39 @@ export default function CommentsTab({ project, setToast }) {
     if (!selectedUpdateId) { setToast({ message: 'Please select a task.', type: 'error' }); return; }
     setSaving(true);
     const commenterName = name.trim() || 'Anonymous';
+    const commentText = comment.trim();
+
     const { data, error } = await supabase.from('comments').insert({
       project_id: project.id,
       update_id: selectedUpdateId,
       name: commenterName,
-      comment: comment.trim(),
+      comment: commentText,
     }).select().single();
+
     setSaving(false);
     if (error) { setToast({ message: error.message, type: 'error' }); return; }
     setComments(prev => [data, ...prev]);
     setComment('');
     setToast({ message: 'Comment posted!', type: 'success' });
 
-    // Send email notification
-    notifyComment({
-      projectName: project.project_name,
-      clientName: project.client_name,
+    // Fetch full project to get latest client_email
+    const { data: fullProject } = await supabase
+      .from('projects')
+      .select('client_email, project_name, client_name')
+      .eq('id', project.id)
+      .single();
+
+    const clientEmail = fullProject?.client_email || project.client_email;
+    const projectName = fullProject?.project_name || project.project_name;
+
+    console.log('Sending notification to client:', clientEmail);
+
+    await notifyComment({
+      projectName,
       commenterName,
-      commentText: comment.trim(),
+      commentText,
       coachEmail: process.env.REACT_APP_COACH_EMAIL,
-      clientEmail: project.client_email,
+      clientEmail,
     });
   };
 
@@ -88,7 +101,14 @@ export default function CommentsTab({ project, setToast }) {
             </div>
             <div>
               <label className="label">Comment *</label>
-              <textarea className="input-field" value={comment} onChange={e => setComment(e.target.value)} placeholder="Write your comment here..." rows={4} style={{ resize: 'vertical' }} />
+              <textarea
+                className="input-field"
+                value={comment}
+                onChange={e => setComment(e.target.value)}
+                placeholder="Write your comment here..."
+                rows={4}
+                style={{ resize: 'vertical' }}
+              />
             </div>
             <button className="btn-primary" onClick={handleSubmit} disabled={saving} style={{ alignSelf: 'flex-start' }}>
               {saving ? 'Posting...' : '✦ Post Comment'}
