@@ -9,10 +9,15 @@ const ACCEPT = { 'Document': '.pdf,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx', 'Imag
 
 const EMPTY_FORM = { title: '', type: 'Link', url: '', description: '' };
 
-function FilePreview({ resource }) {
-  const isImage = resource.type === 'Image' || (resource.file_url && /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(resource.file_url));
-  const isVideo = resource.type === 'Video' || (resource.file_url && /\.(mp4|mov|webm|avi)$/i.test(resource.file_url));
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
 
+function FilePreview({ resource }) {
+  const isImage = resource.type === 'Image' || resource.type === 'Brand Asset' || (resource.file_url && /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(resource.file_url));
+  const isVideo = resource.type === 'Video' || (resource.file_url && /\.(mp4|mov|webm|avi)$/i.test(resource.file_url));
   if (isImage && resource.file_url) {
     return (
       <div style={{ marginBottom: '10px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border)' }}>
@@ -25,7 +30,6 @@ function FilePreview({ resource }) {
       <div style={{ marginBottom: '10px' }}>
         <video controls style={{ width: '100%', borderRadius: '8px', maxHeight: '180px' }}>
           <source src={resource.file_url} />
-          Your browser does not support video playback.
         </video>
       </div>
     );
@@ -43,6 +47,7 @@ export default function ResourceTab({ project, setToast }) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploaderName, setUploaderName] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
   const fileRef = useRef();
 
   const load = useCallback(async () => {
@@ -54,7 +59,20 @@ export default function ResourceTab({ project, setToast }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleFileUpload = async (file, type) => {
+  const handleFileSelect = (file) => {
+    if (!file) return;
+    setSelectedFile(file);
+    if (!form.title) {
+      setForm(f => ({ ...f, title: file.name.replace(/\.[^/.]+$/, '') }));
+    }
+  };
+
+  const clearFile = () => {
+    setSelectedFile(null);
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const handleFileUpload = async (file) => {
     if (!file) return null;
     setUploading(true);
     setUploadProgress(10);
@@ -70,7 +88,7 @@ export default function ResourceTab({ project, setToast }) {
     }
     const { data: urlData } = supabase.storage.from('resources').getPublicUrl(data.path);
     setUploadProgress(100);
-    setTimeout(() => { setUploading(false); setUploadProgress(0); }, 500);
+    setTimeout(() => { setUploading(false); setUploadProgress(0); }, 600);
     return urlData.publicUrl;
   };
 
@@ -78,16 +96,20 @@ export default function ResourceTab({ project, setToast }) {
     if (!form.title.trim()) { setToast({ message: 'Title is required.', type: 'error' }); return; }
     setSaving(true);
     let fileUrl = null;
+    let fileName = null;
 
-    // Handle file upload if a file is selected
-    if (fileRef.current?.files[0] && form.type !== 'Link' && form.type !== 'Login Info') {
-      fileUrl = await handleFileUpload(fileRef.current.files[0], form.type);
+    if (selectedFile && form.type !== 'Link' && form.type !== 'Login Info') {
+      fileUrl = await handleFileUpload(selectedFile);
       if (!fileUrl) { setSaving(false); return; }
+      fileName = selectedFile.name;
     }
 
     const payload = {
-      ...form,
-      ...(fileUrl ? { file_url: fileUrl, file_name: fileRef.current.files[0].name } : {}),
+      title: form.title,
+      type: form.type,
+      url: form.url,
+      description: form.description,
+      ...(fileUrl ? { file_url: fileUrl, file_name: fileName } : {}),
     };
 
     if (editingId) {
@@ -95,53 +117,41 @@ export default function ResourceTab({ project, setToast }) {
       if (!error) {
         setResources(prev => prev.map(r => r.id === editingId ? { ...r, ...payload } : r));
         setToast({ message: 'Resource updated!', type: 'success' });
+      } else {
+        setToast({ message: 'Error: ' + error.message, type: 'error' });
       }
     } else {
       const { data, error } = await supabase.from('resources').insert({ ...payload, project_id: project.id }).select().single();
       if (!error && data) {
         setResources(prev => [data, ...prev]);
         setToast({ message: 'Resource added!', type: 'success' });
-        // Email notification
-        notifyNewResource({
-          projectName: project.project_name,
-          resourceTitle: form.title,
-          resourceType: form.type,
-          coachEmail: process.env.REACT_APP_COACH_EMAIL,
-          clientEmail: project.client_email,
-        });
-        if (fileUrl) {
-          notifyUpload({
-            projectName: project.project_name,
-            uploaderName: uploaderName || 'A user',
-            fileName: fileRef.current?.files[0]?.name,
-            fileType: form.type,
-            coachEmail: process.env.REACT_APP_COACH_EMAIL,
-            clientEmail: project.client_email,
-          });
-        }
+        notifyNewResource({ projectName: project.project_name, resourceTitle: form.title, resourceType: form.type, coachEmail: process.env.REACT_APP_COACH_EMAIL, clientEmail: project.client_email });
+        if (fileUrl) notifyUpload({ projectName: project.project_name, uploaderName: uploaderName || 'A user', fileName, fileType: form.type, coachEmail: process.env.REACT_APP_COACH_EMAIL, clientEmail: project.client_email });
       } else if (error) {
-        setToast({ message: error.message, type: 'error' });
+        setToast({ message: 'Error: ' + error.message, type: 'error' });
       }
     }
     setSaving(false);
     setShowForm(false);
     setEditingId(null);
     setForm(EMPTY_FORM);
+    setSelectedFile(null);
+    setUploaderName('');
     if (fileRef.current) fileRef.current.value = '';
   };
 
   const handleEdit = (r) => {
     setForm({ title: r.title, type: r.type, url: r.url || '', description: r.description || '' });
     setEditingId(r.id);
+    setSelectedFile(null);
     setShowForm(true);
   };
 
   const handleDelete = async (r) => {
     if (!window.confirm('Delete this resource?')) return;
-    // Delete from storage if file
     if (r.file_url) {
-      const path = r.file_url.split('/resources/')[1];
-      if (path) await supabase.storage.from('resources').remove([path]);
+      const parts = r.file_url.split('/resources/');
+      if (parts[1]) await supabase.storage.from('resources').remove([decodeURIComponent(parts[1])]);
     }
     await supabase.from('resources').delete().eq('id', r.id);
     setResources(prev => prev.filter(x => x.id !== r.id));
@@ -149,7 +159,6 @@ export default function ResourceTab({ project, setToast }) {
   };
 
   const showFileInput = form.type !== 'Link' && form.type !== 'Login Info';
-
   const grouped = TYPES.reduce((acc, type) => {
     const items = resources.filter(r => r.type === type);
     if (items.length) acc[type] = items;
@@ -163,7 +172,7 @@ export default function ResourceTab({ project, setToast }) {
           <h3 style={{ color: 'var(--wine)', fontSize: '1.1rem' }}>Resources & Files</h3>
           <p style={{ color: 'var(--rose)', fontSize: '0.82rem', marginTop: '4px' }}>{resources.length} resources</p>
         </div>
-        <button className="btn-primary" onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); }}>+ Add Resource</button>
+        <button className="btn-primary" onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); setSelectedFile(null); }}>+ Add Resource</button>
       </div>
 
       {showForm && (
@@ -176,47 +185,80 @@ export default function ResourceTab({ project, setToast }) {
             </div>
             <div>
               <label className="label">Type</label>
-              <select className="input-field" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
+              <select className="input-field" value={form.type} onChange={e => { setForm({ ...form, type: e.target.value }); setSelectedFile(null); if (fileRef.current) fileRef.current.value = ''; }}>
                 {TYPES.map(t => <option key={t}>{t}</option>)}
               </select>
             </div>
-            {form.type === 'Link' || form.type === 'Login Info' ? (
-              <div>
-                <label className="label">URL / Link</label>
-                <input className="input-field" value={form.url} onChange={e => setForm({ ...form, url: e.target.value })} placeholder="https://..." />
-              </div>
-            ) : (
-              <div>
-                <label className="label">URL (optional if uploading file)</label>
-                <input className="input-field" value={form.url} onChange={e => setForm({ ...form, url: e.target.value })} placeholder="https://..." />
-              </div>
-            )}
+            <div>
+              <label className="label">{showFileInput ? 'URL (optional if uploading)' : 'URL / Link'}</label>
+              <input className="input-field" value={form.url} onChange={e => setForm({ ...form, url: e.target.value })} placeholder="https://..." />
+            </div>
             <div style={{ gridColumn: '1 / -1' }}>
               <label className="label">Description</label>
               <textarea className="input-field" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Brief note about this resource..." rows={2} style={{ resize: 'vertical' }} />
             </div>
 
-            {/* File Upload */}
             {showFileInput && (
               <div style={{ gridColumn: '1 / -1' }}>
                 <label className="label">Upload File ({form.type})</label>
-                <div style={{ border: '2px dashed var(--border)', borderRadius: 'var(--radius-sm)', padding: '20px', textAlign: 'center', background: 'var(--cream)', cursor: 'pointer' }}
-                  onClick={() => fileRef.current?.click()}
-                  onDragOver={e => e.preventDefault()}
-                  onDrop={e => { e.preventDefault(); if (fileRef.current) fileRef.current.files = e.dataTransfer.files; }}>
-                  <div style={{ fontSize: '1.8rem', marginBottom: '8px' }}>{TYPE_ICONS[form.type]}</div>
-                  <p style={{ color: 'var(--rose)', fontSize: '0.85rem', marginBottom: '4px' }}>Click to browse or drag & drop</p>
-                  <p style={{ color: 'var(--rose)', fontSize: '0.75rem', opacity: 0.7 }}>
-                    {form.type === 'Image' ? 'PNG, JPG, GIF, WebP, SVG' : form.type === 'Video' ? 'MP4, MOV, WebM' : 'PDF, DOC, PPT, XLS and more'}
-                  </p>
-                  <input ref={fileRef} type="file" accept={ACCEPT[form.type] || '*'} style={{ display: 'none' }} onChange={e => { if (e.target.files[0] && !form.title) setForm(f => ({ ...f, title: e.target.files[0].name.split('.')[0] })); }} />
-                </div>
+
+                {selectedFile ? (
+                  /* ── File selected — show confirmation card ── */
+                  <div style={{ border: '2px solid var(--rose)', borderRadius: 'var(--radius-sm)', padding: '14px 16px', background: '#fff8f9', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span style={{ fontSize: '2rem' }}>{TYPE_ICONS[form.type]}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--wine)', marginBottom: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        ✓ {selectedFile.name}
+                      </p>
+                      <p style={{ fontSize: '0.75rem', color: 'var(--rose)' }}>{formatFileSize(selectedFile.size)}</p>
+                    </div>
+                    <button onClick={clearFile} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '5px 12px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--rose)', flexShrink: 0 }}>
+                      Change file
+                    </button>
+                  </div>
+                ) : (
+                  /* ── Drop zone ── */
+                  <div
+                    style={{ border: '2px dashed var(--border)', borderRadius: 'var(--radius-sm)', padding: '28px 20px', textAlign: 'center', background: 'var(--cream)', cursor: 'pointer', transition: 'border-color 0.2s, background 0.2s' }}
+                    onClick={() => fileRef.current?.click()}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--rose)'; e.currentTarget.style.background = '#fff8f9'; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--cream)'; }}
+                    onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = 'var(--rose)'; }}
+                    onDragLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      e.currentTarget.style.borderColor = 'var(--border)';
+                      const file = e.dataTransfer.files[0];
+                      if (file) handleFileSelect(file);
+                    }}
+                  >
+                    <div style={{ fontSize: '2.2rem', marginBottom: '8px' }}>{TYPE_ICONS[form.type]}</div>
+                    <p style={{ color: 'var(--wine)', fontSize: '0.9rem', fontWeight: 500, marginBottom: '4px' }}>Click to browse or drag & drop</p>
+                    <p style={{ color: 'var(--rose)', fontSize: '0.75rem', opacity: 0.8 }}>
+                      {form.type === 'Image' ? 'PNG, JPG, GIF, WebP, SVG' :
+                       form.type === 'Video' ? 'MP4, MOV, WebM' :
+                       form.type === 'Brand Asset' ? 'Images, PDF, SVG, AI, EPS' :
+                       'PDF, DOC, DOCX, PPT, XLS and more'}
+                    </p>
+                  </div>
+                )}
+
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept={ACCEPT[form.type] || '*'}
+                  style={{ display: 'none' }}
+                  onChange={e => handleFileSelect(e.target.files[0])}
+                />
+
                 {uploading && (
                   <div style={{ marginTop: '10px' }}>
-                    <div style={{ height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden' }}>
-                      <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'linear-gradient(90deg, var(--blush), var(--wine))', transition: 'width 0.3s' }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: 'var(--rose)', marginBottom: '6px' }}>
+                      <span>Uploading...</span><span>{uploadProgress}%</span>
                     </div>
-                    <p style={{ fontSize: '0.78rem', color: 'var(--rose)', marginTop: '6px' }}>Uploading... {uploadProgress}%</p>
+                    <div style={{ height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden' }}>
+                      <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'linear-gradient(90deg, var(--blush), var(--wine))', borderRadius: '3px', transition: 'width 0.3s' }} />
+                    </div>
                   </div>
                 )}
               </div>
@@ -228,11 +270,18 @@ export default function ResourceTab({ project, setToast }) {
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '10px', marginTop: '16px' }}>
+          <div style={{ display: 'flex', gap: '10px', marginTop: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn-primary" onClick={handleSave} disabled={saving || uploading}>
-              {saving ? 'Saving...' : uploading ? 'Uploading...' : editingId ? '✓ Update' : '+ Add Resource'}
+              {uploading ? `Uploading ${uploadProgress}%...` : saving ? 'Saving...' : editingId ? '✓ Update' : '+ Add Resource'}
             </button>
-            <button className="btn-ghost" onClick={() => { setShowForm(false); setEditingId(null); if (fileRef.current) fileRef.current.value = ''; }}>Cancel</button>
+            <button className="btn-ghost" onClick={() => { setShowForm(false); setEditingId(null); setSelectedFile(null); if (fileRef.current) fileRef.current.value = ''; }}>
+              Cancel
+            </button>
+            {selectedFile && !uploading && (
+              <span style={{ fontSize: '0.78rem', color: '#2d8a54', fontWeight: 500 }}>
+                ✓ Ready: {selectedFile.name}
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -249,7 +298,7 @@ export default function ResourceTab({ project, setToast }) {
           {Object.entries(grouped).map(([type, items]) => (
             <div key={type}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                <span style={{ fontSize: '1rem' }}>{TYPE_ICONS[type]}</span>
+                <span>{TYPE_ICONS[type]}</span>
                 <h4 style={{ color: 'var(--wine)', fontSize: '0.9rem', fontWeight: 600 }}>{type}</h4>
                 <span style={{ fontSize: '0.75rem', color: 'var(--rose)' }}>({items.length})</span>
               </div>
@@ -262,14 +311,11 @@ export default function ResourceTab({ project, setToast }) {
                     <div style={{ paddingRight: '36px' }}>
                       <h5 style={{ color: 'var(--wine)', fontSize: '0.9rem', marginBottom: '6px' }}>{r.title}</h5>
                       {r.description && <p style={{ color: '#5a4a4e', fontSize: '0.8rem', lineHeight: 1.5, marginBottom: '10px' }}>{r.description}</p>}
-
-                      {/* File preview */}
                       <FilePreview resource={r} />
-
                       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                         {r.file_url && (
                           <a href={r.file_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', color: 'var(--wine)', textDecoration: 'none', border: '1px solid var(--border)', padding: '4px 10px', borderRadius: '6px', background: 'var(--cream)' }}>
-                            {r.type === 'Image' ? '🖼 View' : r.type === 'Video' ? '▶ Play' : '⬇ Download'}
+                            {r.type === 'Image' || r.type === 'Brand Asset' ? '🖼 View' : r.type === 'Video' ? '▶ Play' : '⬇ Download'}
                           </a>
                         )}
                         {r.url && (
